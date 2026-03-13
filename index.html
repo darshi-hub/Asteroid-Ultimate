@@ -1,454 +1,683 @@
-<!DOCTYPE html>
-<html>
+<!doctype html>
+<html lang="en">
 <head>
-<meta charset="UTF-8">
-<title>Ultimate Asteroids PRO</title>
-
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Ultimate Asteroids — Fixed & Improved</title>
 <style>
-
-body{
-margin:0;
-overflow:hidden;
-background:black;
-color:white;
-font-family:monospace;
-}
-
-canvas{display:block}
-
-#hud{
-position:absolute;
-top:10px;
-left:10px;
-font-size:15px;
-line-height:1.4em;
-}
-
-#overlay{
-position:absolute;
-top:50%;
-left:50%;
-transform:translate(-50%,-50%);
-text-align:center;
-display:none;
-}
-
-button{
-padding:10px 20px;
-margin:5px;
-font-size:16px;
-}
-
+  html,body{height:100%;margin:0;background:#000;color:#fff;font-family:system-ui,Segoe UI,Roboto,Arial}
+  canvas{display:block}
+  #hud{position:fixed;left:12px;top:12px;z-index:20;font-size:14px;line-height:1.4}
+  #overlay{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:30;text-align:center;display:none}
+  #overlay h1{margin:0 0 10px;font-size:28px}
+  .btn{background:#111;color:#fff;border:1px solid #444;padding:8px 14px;border-radius:6px;cursor:pointer}
+  #mobileControls{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);display:none;gap:8px;z-index:25}
+  .mbtn{width:68px;height:68px;border-radius:12px;background:rgba(255,255,255,0.06);border:2px solid rgba(255,255,255,0.12);display:flex;align-items:center;justify-content:center;font-size:22px}
+  @media (max-width:900px){#mobileControls{display:flex}}
+  #info{position:fixed;right:12px;top:12px;text-align:right;font-size:13px;opacity:0.85}
 </style>
 </head>
-
 <body>
-
-<canvas id="game"></canvas>
+<canvas id="c"></canvas>
 
 <div id="hud">
-Score: <span id="score">0</span><br>
-Lives: <span id="lives">3</span><br>
-Shield: <span id="shield">0</span><br>
-XP: <span id="xp">0</span><br>
-Weapon: <span id="weapon">laser</span><br>
-Level: <span id="level">1</span>
+  Score: <span id="score">0</span> • Lives: <span id="lives">3</span><br>
+  Shield: <span id="shield">0</span> • Weapon: <span id="weapon">Laser</span><br>
+  Level: <span id="level">1</span> • High: <span id="high">0</span>
+</div>
+
+<div id="info">
+  Controls: ⬅ ➡ rotate • ⬆ thrust • Space shoot • P pause
 </div>
 
 <div id="overlay">
-<h2 id="overlayText">GAME OVER</h2>
-<div id="buttons"></div>
+  <h1 id="ovTitle">GAME OVER</h1>
+  <div id="ovText"></div>
+  <div style="margin-top:12px">
+    <button class="btn" id="restartBtn">Restart</button>
+    <button class="btn" id="toggleMusicBtn">Toggle Sounds</button>
+  </div>
+</div>
+
+<div id="mobileControls">
+  <div class="mbtn" id="mleft">◀</div>
+  <div class="mbtn" id="mthrust">▲</div>
+  <div class="mbtn" id="mright">▶</div>
+  <div class="mbtn" id="mshoot">●</div>
 </div>
 
 <script>
+/* ===============================
+   Ultimate Asteroids — single file
+   ===============================
+   Save as an HTML file and open.
+*/
 
-const canvas=document.getElementById("game")
-const ctx=canvas.getContext("2d")
+/* ----- Setup ----- */
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d', { alpha: false });
+let W = canvas.width = innerWidth;
+let H = canvas.height = innerHeight;
 
-canvas.width=innerWidth
-canvas.height=innerHeight
+window.addEventListener('resize', () => {
+  W = canvas.width = innerWidth;
+  H = canvas.height = innerHeight;
+  // reposition UI if needed
+});
 
-let keys={}
-document.addEventListener("keydown",e=>keys[e.key]=true)
-document.addEventListener("keyup",e=>keys[e.key]=false)
+/* ----- Utilities ----- */
+const rand = (a,b) => Math.random()*(b-a)+a;
+const choose = (arr) => arr[Math.floor(Math.random()*arr.length)];
+const clamp = (v,a,b) => Math.max(a, Math.min(b, v));
+const dist = (a,b,c,d) => Math.hypot((a-c),(b-d));
 
-function rand(a,b){return Math.random()*(b-a)+a}
+/* ----- Game state ----- */
+let running = true;
+let paused = false;
+let score = 0;
+let lives = 3;
+let shield = 0;
+let level = 1;
+let weapon = 'laser'; // laser, spread, rapid, plasma
+let high = parseInt(localStorage.getItem('ua_high')||'0',10) || 0;
+document.getElementById('high').innerText = high;
 
-function wrap(o){
+/* ----- Objects containers ----- */
+let ship, bullets = [], asteroids = [], enemies = [], particles = [], powerups = [], starsLayers = [], bosses = [];
 
-if(o.x<0)o.x=canvas.width
-if(o.x>canvas.width)o.x=0
-if(o.y<0)o.y=canvas.height
-if(o.y>canvas.height)o.y=0
+/* ----- Input ----- */
+const keys = {};
+addEventListener('keydown', e => { keys[e.key] = true; if(e.key==='p'){ paused = !paused }});
+addEventListener('keyup', e => keys[e.key] = false);
 
+/* Mobile button handlers */
+const mobile = {
+  left:false, right:false, thrust:false, shoot:false
+};
+[['mleft','left'],['mright','right'],['mthrust','thrust'],['mshoot','shoot']].forEach(([id,key])=>{
+  const el = document.getElementById(id);
+  if(!el) return;
+  const start = ()=>{ mobile[key]=true; el.style.background = 'rgba(255,255,255,0.12)'; };
+  const end = ()=>{ mobile[key]=false; el.style.background = ''; };
+  el.addEventListener('touchstart', (ev)=>{ ev.preventDefault(); start(); });
+  el.addEventListener('touchend', (ev)=>{ ev.preventDefault(); end(); });
+  el.addEventListener('mousedown', start);
+  window.addEventListener('mouseup', end);
+});
+
+/* Gamepad poll */
+let gpState = null;
+function pollGamepad(){
+  const g = navigator.getGamepads && navigator.getGamepads()[0];
+  if(!g) return;
+  // simple mapping: left stick + buttons
+  gpState = g;
+  // map left/right/up to keys
+  const lx = g.axes[0] || 0;
+  if(lx < -0.3) keys['ArrowLeft'] = true; else if(lx > 0.3) keys['ArrowRight'] = true;
+  else { keys['ArrowLeft']=keys['ArrowRight']=false; }
+  const ly = g.axes[1] || 0;
+  if(ly < -0.3) keys['ArrowUp'] = true; else keys['ArrowUp']=false;
+  // button 0 = A = shoot
+  if(g.buttons[0].pressed) keys[' '] = true; else if(!mobile.shoot) keys[' '] = false;
 }
 
-let bullets=[]
-let asteroids=[]
-let enemies=[]
-let particles=[]
-let bosses=[]
-let stars=[]
+/* ----- Audio (simple) ----- */
+let audioOn = true;
+let audioCtx = null;
+function ensureAudio(){
+  if(!audioOn) return null;
+  if(!audioCtx) audioCtx = new (window.AudioContext||window.webkitAudioContext)();
+  return audioCtx;
+}
+function playBeep(f=440, t=0.06, type='sine', gain=0.08){
+  if(!audioOn) return;
+  const a = ensureAudio();
+  if(!a) return;
+  const o = a.createOscillator();
+  const gnode = a.createGain();
+  o.type = type; o.frequency.value = f;
+  gnode.gain.value = gain;
+  o.connect(gnode); gnode.connect(a.destination);
+  o.start();
+  gnode.gain.exponentialRampToValueAtTime(0.0001, a.currentTime + t);
+  setTimeout(()=>o.stop(), t*1000+20);
+}
+function shootSfx(){ playBeep(900,0.05,'square',0.06) }
+function hitSfx(){ playBeep(120,0.08,'sawtooth',0.12) }
+function explosionSfx(){ playBeep(100,0.4,'sine',0.16); playBeep(300,0.18,'triangle',0.08) }
 
-let score=0
-let lives=3
-let shield=0
-let xp=0
-let level=1
-let weapon="laser"
+/* Toggle sounds */
+document.getElementById('toggleMusicBtn').addEventListener('click', ()=>{
+  audioOn = !audioOn;
+  document.getElementById('toggleMusicBtn').innerText = audioOn ? 'Toggle Sounds' : 'Sounds Off';
+});
 
-class Ship{
+/* ----- Entities ----- */
+class Ship {
+  constructor(){
+    this.x = W/2;
+    this.y = H/2;
+    this.vx = 0;
+    this.vy = 0;
+    this.angle = 0;
+    this.radius = 14;
+    this.cool = 0;
+    this.invuln = 0; // frames
+  }
+  update(){
+    // input
+    if(keys['ArrowLeft'] || mobile.left) this.angle -= 0.08;
+    if(keys['ArrowRight'] || mobile.right) this.angle += 0.08;
+    if(keys['ArrowUp'] || mobile.thrust){
+      const thrust = 0.18;
+      this.vx += Math.cos(this.angle) * thrust;
+      this.vy += Math.sin(this.angle) * thrust;
+      spawnParticle(this.x - Math.cos(this.angle)*16, this.y - Math.sin(this.angle)*16, -this.angle, 1.6, 10);
+    }
+    // gamepad poll
+    if(navigator.getGamepads) pollGamepad();
 
-constructor(){
-
-this.x=canvas.width/2
-this.y=canvas.height/2
-this.vx=0
-this.vy=0
-this.angle=0
-this.cool=0
-
+    this.x += this.vx;
+    this.y += this.vy;
+    // friction
+    this.vx *= 0.995;
+    this.vy *= 0.995;
+    // wrap
+    if(this.x < -20) this.x = W+20;
+    if(this.x > W+20) this.x = -20;
+    if(this.y < -20) this.y = H+20;
+    if(this.y > H+20) this.y = -20;
+    if(this.cool>0) this.cool--;
+    if(this.invuln>0) this.invuln--;
+    // automatic shooting
+    if((keys[' '] || mobile.shoot) && this.cool <= 0){
+      fireWeapon(this);
+      this.cool = weapon==='rapid' ? 5 : 12;
+      if(weapon === 'rapid') shootSfx();
+    }
+  }
+  draw(){
+    ctx.save();
+    ctx.translate(this.x, this.y);
+    ctx.rotate(this.angle);
+    // ship body
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(16,0);
+    ctx.lineTo(-12,-10);
+    ctx.lineTo(-6,0);
+    ctx.lineTo(-12,10);
+    ctx.closePath();
+    ctx.stroke();
+    // shield
+    if(shield > 0 || this.invuln>0){
+      ctx.beginPath();
+      ctx.strokeStyle = shield>0 ? 'rgba(80,180,255,0.9)' : 'rgba(255,255,255,0.7)';
+      ctx.lineWidth = 2;
+      ctx.arc(0,0,24,0,Math.PI*2);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
 }
 
-update(){
-
-if(keys["ArrowLeft"])this.angle-=0.07
-if(keys["ArrowRight"])this.angle+=0.07
-
-if(keys["ArrowUp"]){
-
-this.vx+=Math.cos(this.angle)0.2
-this.vy+=Math.sin(this.angle)0.2
-
-particles.push(new Particle(
-this.x-Math.cos(this.angle)15,
-this.y-Math.sin(this.angle)15
-))
-
+class Bullet {
+  constructor(x,y,angle,spd=8,life=80,owner='player',type='normal'){
+    this.x = x; this.y = y; this.vx = Math.cos(angle)*spd; this.vy = Math.sin(angle)*spd;
+    this.life = life; this.owner = owner; this.radius = 3; this.type = type;
+  }
+  update(){ this.x += this.vx; this.y += this.vy; this.life--; if(this.x < -10) this.x = W+10; if(this.x>W+10) this.x=-10; if(this.y< -10) this.y = H+10; if(this.y>H+10) this.y=-10; }
+  draw(){ ctx.fillStyle = this.owner==='player' ? '#fff' : '#f88'; ctx.fillRect(this.x-1.5,this.y-1.5,3,3); }
 }
 
-this.x+=this.vx
-this.y+=this.vy
-
-this.vx=0.99
-this.vy=0.99
-
-wrap(this)
-
-if(keys[" "]&&this.cool<=0)shoot()
-
-this.cool--
-
+class Asteroid {
+  constructor(x,y,size=3){
+    this.x=x; this.y=y; this.size=size; this.radius = size*18 + rand(-3,6);
+    this.vx = rand(-1.6,1.6); this.vy = rand(-1.6,1.6); this.rot = rand(0,Math.PI*2);
+    this.vrot = rand(-0.02,0.02);
+    // procedural polygon offsets
+    this.verts = Array.from({length:8}, ()=>rand(-8,8));
+  }
+  update(){ this.x+=this.vx; this.y+=this.vy; this.rot += this.vrot; if(this.x < -40) this.x = W+40; if(this.x>W+40) this.x=-40; if(this.y< -40) this.y = H+40; if(this.y>H+40) this.y=-40; }
+  draw(){
+    ctx.save(); ctx.translate(this.x,this.y); ctx.rotate(this.rot); ctx.strokeStyle = '#ddd'; ctx.beginPath();
+    const n = this.verts.length;
+    for(let i=0;i<n;i++){
+      const ang = (Math.PI*2*i)/n;
+      const r = this.radius + this.verts[i];
+      const px = Math.cos(ang)*r, py = Math.sin(ang)*r;
+      if(i===0) ctx.moveTo(px,py); else ctx.lineTo(px,py);
+    }
+    ctx.closePath(); ctx.stroke(); ctx.restore();
+  }
 }
 
-draw(){
-
-ctx.save()
-ctx.translate(this.x,this.y)
-ctx.rotate(this.angle)
-
-ctx.beginPath()
-ctx.moveTo(20,0)
-ctx.lineTo(-15,-10)
-ctx.lineTo(-10,0)
-ctx.lineTo(-15,10)
-ctx.closePath()
-ctx.stroke()
-
-if(shield>0){
-
-ctx.beginPath()
-ctx.arc(0,0,25,0,Math.PI2)
-ctx.stroke()
-
+class Enemy {
+  constructor(type='scout'){
+    this.type = type;
+    this.x = rand(0,W); this.y = -40;
+    this.vx = rand(-0.6,0.6); this.vy = rand(0.6,1.4);
+    this.radius = 12; this.cool = 80 + Math.floor(rand(0,80));
+    this.hp = this.type === 'hunter' ? 3 : 1;
+  }
+  update(){
+    // simple AI
+    if(this.type === 'hunter'){
+      const ang = Math.atan2(ship.y - this.y, ship.x - this.x);
+      this.vx += Math.cos(ang)*0.02;
+      this.vy += Math.sin(ang)*0.02;
+      // limit speed
+      const sp = Math.hypot(this.vx,this.vy);
+      if(sp > 2.2){ this.vx *= 2.2/sp; this.vy *= 2.2/sp; }
+    }
+    this.x += this.vx; this.y += this.vy;
+    if(this.x < -40) this.x = W+40; if(this.x>W+40) this.x=-40;
+    if(this.y > H+80) this.y = -60;
+    if(this.cool-- <= 0){
+      const ang = Math.atan2(ship.y - this.y, ship.x - this.x);
+      bullets.push(new Bullet(this.x, this.y, ang, 5, 120, 'enemy'));
+      this.cool = this.type === 'hunter' ? 60 : 100;
+    }
+  }
+  draw(){ ctx.save(); ctx.translate(this.x,this.y); ctx.strokeStyle = '#f88'; ctx.strokeRect(-10,-6,20,12); ctx.restore(); }
 }
 
-ctx.restore()
-
+class Boss {
+  constructor(){
+    this.x = W/2; this.y = 80; this.hp = 160; this.phase = 1; this.cool = 40; this.radius = 42;
+  }
+  update(){
+    if(this.hp < 110) this.phase = 2;
+    if(this.hp < 50) this.phase = 3;
+    // movement: horizontal sine drift
+    this.x = W/2 + Math.sin(Date.now()/1200)*Math.min(200, 50+level*10);
+    if(this.cool-- <= 0){
+      // shoot pattern depends on phase
+      const base = Math.atan2(ship.y - this.y, ship.x - this.x);
+      if(this.phase === 1){
+        bullets.push(new Bullet(this.x, this.y, base, 5, 120, 'enemy'));
+      } else if(this.phase === 2){
+        for(let i=-1;i<=1;i++) bullets.push(new Bullet(this.x, this.y, base + i*0.25, 5.5, 140, 'enemy'));
+      } else {
+        for(let i=-2;i<=2;i++) bullets.push(new Bullet(this.x, this.y, base + i*0.28, 6, 160, 'enemy'));
+      }
+      this.cool = 40 - this.phase*6;
+    }
+  }
+  draw(){
+    ctx.save(); ctx.translate(this.x,this.y); ctx.strokeStyle = '#ffb86b'; ctx.lineWidth = 2;
+    ctx.strokeRect(-42,-22,84,44);
+    ctx.restore();
+  }
 }
 
+class Powerup {
+  constructor(x,y,type){
+    this.x=x; this.y=y; this.type = type || choose(['shield','life','spread','rapid','plasma']);
+    this.radius = 10;
+    this.vy = 0.6;
+  }
+  update(){ this.y += this.vy; }
+  draw(){
+    ctx.save(); ctx.translate(this.x,this.y);
+    ctx.strokeStyle = (this.type==='shield')?'#4ed0ff':(this.type==='life'?'#8bff8b':'#ffd86b');
+    if(this.type==='shield'){ ctx.beginPath(); ctx.arc(0,0,10,0,Math.PI*2); ctx.stroke(); }
+    else if(this.type==='life'){ ctx.beginPath(); ctx.moveTo(-6,0); ctx.lineTo(0,-10); ctx.lineTo(6,0); ctx.stroke(); }
+    else { ctx.strokeRect(-8,-8,16,16); }
+    ctx.restore();
+  }
 }
 
-class Bullet{
-
-constructor(x,y,a,s=8){
-
-this.x=x
-this.y=y
-this.vx=Math.cos(a)s
-this.vy=Math.sin(a)s
-this.life=80
-
+class Particle {
+  constructor(x,y,vx,vy,life=40,col='#fff',size=2){
+    this.x=x; this.y=y; this.vx=vx; this.vy=vy; this.life=life; this.col=col; this.size=size;
+  }
+  update(){ this.x+=this.vx; this.y+=this.vy; this.vx*=0.99; this.vy*=0.99; this.life--; }
+  draw(){ if(this.life>0){ ctx.fillStyle=this.col; ctx.fillRect(this.x, this.y, this.size, this.size); } }
 }
 
-update(){
-
-this.x+=this.vx
-this.y+=this.vy
-this.life--
-
+/* ----- Object helpers ----- */
+function spawnParticle(x,y,angle,pow,life,col,size){
+  const vx = Math.cos(angle + (rand(-0.6,0.6)))*pow;
+  const vy = Math.sin(angle + (rand(-0.6,0.6)))*pow;
+  particles.push(new Particle(x,y,vx,vy,life || 30,col || '#fff', size || 2));
+}
+function spawnExplosion(x,y,mag=18){
+  for(let i=0;i<mag;i++){
+    particles.push(new Particle(x, y, rand(-3,3), rand(-3,3), 30+Math.floor(rand(0,40)), ['#fff','#ffb86b','#ff6b6b'][Math.floor(rand(0,3))], 2));
+  }
+  explosionSfx();
 }
 
-draw(){
-
-ctx.fillRect(this.x,this.y,3,3)
-
+/* Weapon firing */
+function fireWeapon(s){
+  const a = s.angle;
+  if(weapon === 'laser'){
+    bullets.push(new Bullet(s.x + Math.cos(a)*18, s.y + Math.sin(a)*18, a, 9));
+    shootSfx();
+  } else if(weapon === 'spread'){
+    bullets.push(new Bullet(s.x + Math.cos(a)*18, s.y + Math.sin(a)*18, a-0.18, 8));
+    bullets.push(new Bullet(s.x + Math.cos(a)*18, s.y + Math.sin(a)*18, a, 8));
+    bullets.push(new Bullet(s.x + Math.cos(a)*18, s.y + Math.sin(a)*18, a+0.18, 8));
+    playBeep(720,0.06,'square',0.06);
+  } else if(weapon === 'rapid'){
+    bullets.push(new Bullet(s.x + Math.cos(a)*18, s.y + Math.sin(a)*18, a, 11));
+    shootSfx();
+  } else if(weapon === 'plasma'){
+    bullets.push(new Bullet(s.x + Math.cos(a)*18, s.y + Math.sin(a)*18, a, 6, 100, 'player', 'plasma'));
+    playBeep(520,0.08,'sawtooth',0.09);
+  }
 }
 
+/* ----- Starfield (parallax) ----- */
+function initStars(){
+  starsLayers = [];
+  for(let layer=0;layer<3;layer++){
+    const count = layer===0?60:layer===1?100:160;
+    const speed = 0.05 + layer*0.06;
+    const dots = [];
+    for(let i=0;i<count;i++) dots.push({ x: rand(0,W), y: rand(0,H), s: rand(0.6,1.8) });
+    starsLayers.push({ dots, speed });
+  }
 }
 
-class Asteroid{
-
-constructor(x,y,size){
-
-this.x=x
-this.y=y
-this.size=size
-this.radius=size22
-
-this.vx=rand(-2,2)
-this.vy=rand(-2,2)
-
+/* ----- Spawning ----- */
+function spawnAsteroids(n = 5){
+  for(let i=0;i<n;i++){
+    const x = Math.random() < 0.5 ? rand(-200, -40) : rand(W+40, W+200);
+    const y = rand(0,H);
+    asteroids.push(new Asteroid(x,y, 2 + Math.floor(rand(0,2))));
+  }
 }
 
-update(){
-
-this.x+=this.vx
-this.y+=this.vy
-wrap(this)
-
+function spawnEnemyWave(n=2){
+  for(let i=0;i<n;i++) enemies.push(new Enemy( i%2? 'scout':'hunter' ));
 }
 
-draw(){
-
-ctx.beginPath()
-
-for(let i=0;i<8;i++){
-
-let a=iMath.PI2/8
-let r=this.radius+rand(-4,4)
-
-ctx.lineTo(this.x+Math.cos(a)*r,this.y+Math.sin(a)*r)
-
+function spawnPowerup(x,y){
+  powerups.push(new Powerup(x,y));
 }
 
-ctx.closePath()
-ctx.stroke()
-
+/* ----- Start/Reset ----- */
+function resetGame(){
+  bullets = []; asteroids = []; enemies = []; particles = []; powerups = []; bosses = [];
+  score = 0; lives = 3; shield = 0; level = 1; weapon = 'laser';
+  ship = new Ship();
+  initStars();
+  spawnAsteroids(6);
+  spawnEnemyWave(2);
+  paused = false;
+  running = true;
+  document.getElementById('overlay').style.display = 'none';
 }
+document.getElementById('restartBtn').addEventListener('click', ()=>{ resetGame(); });
 
-}
+/* ----- Collision helpers ----- */
+function circleHit(ax,ay,ar,bx,by,br){ return ((ax-bx)*(ax-bx)+(ay-by)*(ay-by)) < (ar+br)*(ar+br); }
 
-class Enemy{
-
-constructor(){
-
-this.x=rand(0,canvas.width)
-this.y=0
-this.cool=100
-
-}
-
-update(){
-
-let dx=ship.x-this.x
-let dy=ship.y-this.y
-let ang=Math.atan2(dy,dx)
-
-this.x+=Math.cos(ang)*1
-this.y+=Math.sin(ang)1
-
-if(this.cool<=0){
-
-bullets.push(new Bullet(this.x,this.y,ang,6))
-this.cool=100
-
-}
-
-this.cool--
-
-}
-
-draw(){
-
-ctx.strokeRect(this.x-10,this.y-5,20,10)
-
-}
-
-}
-
-class Boss{
-
-constructor(){
-
-this.x=canvas.width/2
-this.y=100
-this.hp=200
-this.phase=1
-
-}
-
-update(){
-
-if(this.hp<150)this.phase=2
-if(this.hp<70)this.phase=3
-
-let dx=ship.x-this.x
-let dy=ship.y-this.y
-let ang=Math.atan2(dy,dx)
-
-if(Math.random()<0.03this.phase){
-
-bullets.push(new Bullet(this.x,this.y,ang,6))
-bullets.push(new Bullet(this.x,this.y,ang+0.3,6))
-bullets.push(new Bullet(this.x,this.y,ang-0.3,6))
-
-}
-
-}
-
-draw(){
-
-ctx.strokeRect(this.x-40,this.y-20,80,40)
-
-}
-
-}
-
-class Particle{
-
-constructor(x,y){
-
-this.x=x
-this.y=y
-
-this.vx=rand(-2,2)
-this.vy=rand(-2,2)
-
-this.life=40
-
-}
-
-update(){
-
-this.x+=this.vx
-this.y+=this.vy
-this.life--
-
-}
-
-draw(){
-
-ctx.fillRect(this.x,this.y,2,2)
-
-}
-
-}
-
-function shoot(){
-
-let a=ship.angle
-
-if(weapon==="laser")bullets.push(new Bullet(ship.x,ship.y,a))
-
-if(weapon==="spread"){
-
-bullets.push(new Bullet(ship.x,ship.y,a-0.2))
-bullets.push(new Bullet(ship.x,ship.y,a))
-bullets.push(new Bullet(ship.x,ship.y,a+0.2))
-
-}
-
-if(weapon==="rapid")bullets.push(new Bullet(ship.x,ship.y,a,10))
-
-ship.cool=10
-
-}
-
-function explode(x,y){
-
-for(let i=0;i<40;i++)
-particles.push(new Particle(x,y))
-
-}
-
-function spawnStars(){
-
-for(let i=0;i<200;i++){
-
-stars.push({
-x:rand(0,canvas.width),
-y:rand(0,canvas.height),
-s:rand(1,3)
-})
-
-}
-
-}
-
-function drawStars(){
-
-stars.forEach(s=>ctx.fillRect(s.x,s.y,s.s,s.s))
-
-}
-
-let ship=new Ship()
-
-spawnStars()
-
+/* ----- Update & Draw ----- */
+let frame = 0;
 function update(){
+  if(!running || paused) return;
+  frame++;
 
-ship.update()
+  // poll gamepad
+  if(navigator.getGamepads) pollGamepad();
 
-bullets.forEach((b,i)=>{
+  ship.update();
 
-b.update()
-if(b.life<=0)bullets.splice(i,1)
+  // update bullets
+  for(let i = bullets.length-1; i>=0; i--){
+    const b = bullets[i]; b.update();
+    if(b.life <= 0) { bullets.splice(i,1); continue; }
+    // enemy bullets vs ship
+    if(b.owner === 'enemy' && shield <= 0 && ship.invuln<=0){
+      if(circleHit(b.x,b.y,2, ship.x,ship.y, ship.radius)){
+        bullets.splice(i,1);
+        hitShip();
+        continue;
+      }
+    }
+  }
 
-})
+  // asteroids
+  for(let i = asteroids.length-1; i>=0; i--){
+    const a = asteroids[i];
+    a.update();
+    // bullets hit asteroid
+    for(let j = bullets.length-1; j>=0; j--){
+      const b = bullets[j];
+      if(b.owner !== 'player') continue;
+      if(circleHit(a.x,a.y,a.radius, b.x,b.y, b.radius)){
+        // hit
+        bullets.splice(j,1);
+        spawnExplosion(a.x,a.y, 14 + a.size*6);
+        score += 20 * a.size;
+        // chance powerup
+        if(Math.random() < 0.12) spawnPowerup(a.x, a.y);
+        // split
+        if(a.size > 1){
+          asteroids.push(new Asteroid(a.x + rand(-6,6), a.y + rand(-6,6), a.size - 1));
+          asteroids.push(new Asteroid(a.x + rand(-6,6), a.y + rand(-6,6), a.size - 1));
+        }
+        asteroids.splice(i,1);
+        playBeep(180+Math.random()*280, 0.08, 'square', 0.06);
+        break;
+      }
+    }
+    // asteroid hits ship
+    if(circleHit(a.x,a.y,a.radius, ship.x,ship.y, ship.radius) && ship.invuln<=0){
+      // destroy or shield
+      if(shield>0){ shield--; asteroids.splice(i,1); spawnExplosion(a.x,a.y,8); }
+      else { asteroids.splice(i,1); hitShip(); spawnExplosion(ship.x,ship.y,32); }
+    }
+  }
 
-particles.forEach((p,i)=>{
+  // enemies
+  for(let i = enemies.length-1; i>=0; i--){
+    const e = enemies[i];
+    e.update();
+    // bullets from player to enemy
+    for(let j = bullets.length-1; j>=0; j--){
+      const b = bullets[j];
+      if(b.owner==='player' && circleHit(e.x,e.y,e.radius, b.x,b.y,b.radius)){
+        bullets.splice(j,1);
+        e.hp--;
+        spawnExplosion(e.x,e.y,8);
+        if(e.hp <= 0){
+          score += 80;
+          if(Math.random() < 0.25) spawnPowerup(e.x, e.y);
+          enemies.splice(i,1);
+          playBeep(260,0.14,'sine',0.09);
+          break;
+        }
+      }
+    }
+    // enemy hits ship
+    if(circleHit(e.x,e.y,e.radius, ship.x,ship.y, ship.radius) && ship.invuln<=0){
+      // collision with enemy is severe
+      enemies.splice(i,1);
+      hitShip();
+      spawnExplosion(ship.x,ship.y,40);
+    }
+  }
 
-p.update()
-if(p.life<=0)particles.splice(i,1)
+  // bosses
+  for(let bi=bosses.length-1; bi>=0; bi--){
+    const B = bosses[bi];
+    B.update();
+    // bullets hit boss
+    for(let j = bullets.length-1; j>=0; j--){
+      const b = bullets[j];
+      if(b.owner==='player' && circleHit(B.x,B.y,B.radius, b.x,b.y,b.radius)){
+        bullets.splice(j,1);
+        B.hp -= (b.type==='plasma'? 6 : 2);
+        spawnExplosion(b.x,b.y,6);
+        if(B.hp <= 0){
+          score += 800;
+          spawnExplosion(B.x,B.y,60);
+          bosses.splice(bi,1);
+          levelUpAfterBoss();
+          break;
+        }
+      }
+    }
+    // boss bullets -> ship handled in bullet loop
+  }
 
-})
+  // powerups
+  for(let i=powerups.length-1; i>=0; i--){
+    const p = powerups[i];
+    p.update();
+    if(dist(p.x,p.y,ship.x,ship.y) < p.radius + ship.radius){
+      // collect
+      if(p.type === 'shield') { shield += 2; playBeep(820,0.12,'sine',0.08); }
+      else if(p.type === 'life') { lives++; playBeep(1200,0.09,'sine',0.09); }
+      else { weapon = p.type; document.getElementById('weapon').innerText = capitalize(weapon); playBeep(720,0.06,'square',0.06); }
+      powerups.splice(i,1);
+    }
+  }
 
+  // particles
+  for(let i = particles.length-1; i>=0; i--){
+    const p = particles[i]; p.update();
+    if(p.life <= 0) particles.splice(i,1);
+  }
+
+  // spawn more if needed
+  if(asteroids.length === 0 && bosses.length === 0){
+    level++;
+    spawnAsteroids(4 + level);
+    spawnEnemyWave(1 + Math.floor(level/2));
+    // occasionally spawn boss
+    if(level % 4 === 0){
+      bosses.push(new Boss());
+      spawnEnemyWave(2 + Math.floor(level/3));
+    }
+  }
+
+  // star layers movement
+  starsLayers.forEach((layer, idx) => {
+    layer.dots.forEach(d => {
+      d.y += layer.speed;
+      if(d.y > H) d.y = 0;
+    });
+  });
+
+  // HUD updates
+  document.getElementById('score').innerText = score;
+  document.getElementById('lives').innerText = lives;
+  document.getElementById('shield').innerText = shield;
+  document.getElementById('level').innerText = level;
+  document.getElementById('weapon').innerText = capitalize(weapon);
+
+  // update high score
+  if(score > high){ high = score; localStorage.setItem('ua_high', String(high)); document.getElementById('high').innerText = high; }
 }
 
 function draw(){
+  // clear
+  ctx.fillStyle = '#000'; ctx.fillRect(0,0,W,H);
+  // star layers parallax
+  starsLayers.forEach((layer, idx) => {
+    const alpha = 0.85 - idx*0.25;
+    ctx.fillStyle = `rgba(255,255,255,${alpha})`;
+    layer.dots.forEach(d => ctx.fillRect(d.x, d.y, d.s, d.s));
+  });
 
-ctx.fillStyle="black"
-ctx.fillRect(0,0,canvas.width,canvas.height)
+  // planets / parallax decor (optional)
 
-drawStars()
+  // draw asteroids/enemies/bullets/particles/ship
+  asteroids.forEach(a => a.draw());
+  enemies.forEach(e => e.draw());
+  bosses.forEach(b => b.draw());
+  bullets.forEach(b => b.draw());
+  powerups.forEach(p => p.draw());
+  particles.forEach(p => p.draw());
+  ship.draw();
 
-ship.draw()
-
-bullets.forEach(b=>b.draw())
-particles.forEach(p=>p.draw())
-
+  // small HUD indicators (can add crosshair etc.)
+  if(paused){
+    ctx.save();
+    ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fillRect(W/2-160, H/2-60, 320, 120);
+    ctx.fillStyle = '#fff'; ctx.font = '22px monospace';
+    ctx.textAlign = 'center'; ctx.fillText('PAUSED', W/2, H/2);
+    ctx.restore();
+  }
 }
 
+/* ----- Helpers ----- */
+function capitalize(s){ return s.charAt(0).toUpperCase()+s.slice(1); }
+
+function hitShip(){
+  if(shield > 0){ shield--; return; }
+  lives--;
+  hitSfx();
+  ship.x = W/2; ship.y = H/2; ship.vx = 0; ship.vy = 0; ship.invuln = 80;
+  if(lives <= 0) endGame();
+}
+
+/* When boss dies: give big reward and next wave */
+function levelUpAfterBoss(){
+  score += 400;
+  spawnPowerup(W/2, H/2);
+}
+
+/* ----- Game over ----- */
+function endGame(){
+  running = false;
+  document.getElementById('overlay').style.display = 'block';
+  document.getElementById('ovTitle').innerText = 'GAME OVER';
+  document.getElementById('ovText').innerHTML = `Score: <b>${score}</b><br>Level: <b>${level}</b><br>High: <b>${high}</b>`;
+}
+
+/* ----- Init & loop ----- */
+function init(){
+  ship = new Ship();
+  initStars();
+  spawnAsteroids(6);
+  spawnEnemyWave(2);
+  // quick starter particles for life
+  for(let i=0;i<12;i++) particles.push(new Particle(rand(W*0.4,W*0.6), rand(H*0.4,H*0.6), rand(-1,1), rand(-1,1), 20));
+  loop();
+}
 function loop(){
+  if(!paused) update();
+  draw();
+  if(running) requestAnimationFrame(loop);
+}
+init();
 
-update()
-draw()
-
-document.getElementById("score").innerText=score
-document.getElementById("lives").innerText=lives
-document.getElementById("shield").innerText=shield
-document.getElementById("xp").innerText=xp
-document.getElementById("weapon").innerText=weapon
-document.getElementById("level").innerText=level
-
-requestAnimationFrame(loop)
-
+/* ----- Utility: spawn explosion shorthand ----- */
+function spawnExplosion(x,y,mag){
+  spawnExplosion = spawnExplosion; // no-op to hint linter is aware
+  spawnExplosionActual(x,y,mag);
+}
+function spawnExplosionActual(x,y,mag){
+  spawnExplosionActual = spawnExplosionActual; // eslint noop
+  spawnExplosionActualInner(x,y,mag);
+}
+function spawnExplosionActualInner(x,y,mag){
+  for(let i=0;i<mag;i++){
+    particles.push(new Particle(x, y, rand(-3,3), rand(-3,3), 26+Math.floor(rand(0,40)), ['#ffd86b','#ff6b6b','#ffffff'][Math.floor(rand(0,3))], 2));
+  }
+  explosionSfx();
 }
 
-loop()
+/* ----- Small polish: keyboard shortcuts ----- */
+window.addEventListener('keypress', e=>{
+  if(e.key === 'r') resetGame();
+  if(e.key === 'm') audioOn = !audioOn;
+});
+
+/* Expose restart function for overlay button */
+window.resetGame = resetGame;
+
+/* Ensure the overlay toggle-sounds button text reflects audioOn */
+document.getElementById('toggleMusicBtn').innerText = audioOn ? 'Toggle Sounds' : 'Sounds Off';
 
 </script>
-
 </body>
 </html>
