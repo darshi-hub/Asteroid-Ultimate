@@ -1,0 +1,454 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Ultimate Asteroids PRO</title>
+
+<style>
+
+body{
+margin:0;
+overflow:hidden;
+background:black;
+color:white;
+font-family:monospace;
+}
+
+canvas{display:block}
+
+#hud{
+position:absolute;
+top:10px;
+left:10px;
+font-size:15px;
+line-height:1.4em;
+}
+
+#overlay{
+position:absolute;
+top:50%;
+left:50%;
+transform:translate(-50%,-50%);
+text-align:center;
+display:none;
+}
+
+button{
+padding:10px 20px;
+margin:5px;
+font-size:16px;
+}
+
+</style>
+</head>
+
+<body>
+
+<canvas id="game"></canvas>
+
+<div id="hud">
+Score: <span id="score">0</span><br>
+Lives: <span id="lives">3</span><br>
+Shield: <span id="shield">0</span><br>
+XP: <span id="xp">0</span><br>
+Weapon: <span id="weapon">laser</span><br>
+Level: <span id="level">1</span>
+</div>
+
+<div id="overlay">
+<h2 id="overlayText">GAME OVER</h2>
+<div id="buttons"></div>
+</div>
+
+<script>
+
+const canvas=document.getElementById("game")
+const ctx=canvas.getContext("2d")
+
+canvas.width=innerWidth
+canvas.height=innerHeight
+
+let keys={}
+document.addEventListener("keydown",e=>keys[e.key]=true)
+document.addEventListener("keyup",e=>keys[e.key]=false)
+
+function rand(a,b){return Math.random()*(b-a)+a}
+
+function wrap(o){
+
+if(o.x<0)o.x=canvas.width
+if(o.x>canvas.width)o.x=0
+if(o.y<0)o.y=canvas.height
+if(o.y>canvas.height)o.y=0
+
+}
+
+let bullets=[]
+let asteroids=[]
+let enemies=[]
+let particles=[]
+let bosses=[]
+let stars=[]
+
+let score=0
+let lives=3
+let shield=0
+let xp=0
+let level=1
+let weapon="laser"
+
+class Ship{
+
+constructor(){
+
+this.x=canvas.width/2
+this.y=canvas.height/2
+this.vx=0
+this.vy=0
+this.angle=0
+this.cool=0
+
+}
+
+update(){
+
+if(keys["ArrowLeft"])this.angle-=0.07
+if(keys["ArrowRight"])this.angle+=0.07
+
+if(keys["ArrowUp"]){
+
+this.vx+=Math.cos(this.angle)0.2
+this.vy+=Math.sin(this.angle)0.2
+
+particles.push(new Particle(
+this.x-Math.cos(this.angle)15,
+this.y-Math.sin(this.angle)15
+))
+
+}
+
+this.x+=this.vx
+this.y+=this.vy
+
+this.vx=0.99
+this.vy=0.99
+
+wrap(this)
+
+if(keys[" "]&&this.cool<=0)shoot()
+
+this.cool--
+
+}
+
+draw(){
+
+ctx.save()
+ctx.translate(this.x,this.y)
+ctx.rotate(this.angle)
+
+ctx.beginPath()
+ctx.moveTo(20,0)
+ctx.lineTo(-15,-10)
+ctx.lineTo(-10,0)
+ctx.lineTo(-15,10)
+ctx.closePath()
+ctx.stroke()
+
+if(shield>0){
+
+ctx.beginPath()
+ctx.arc(0,0,25,0,Math.PI2)
+ctx.stroke()
+
+}
+
+ctx.restore()
+
+}
+
+}
+
+class Bullet{
+
+constructor(x,y,a,s=8){
+
+this.x=x
+this.y=y
+this.vx=Math.cos(a)s
+this.vy=Math.sin(a)s
+this.life=80
+
+}
+
+update(){
+
+this.x+=this.vx
+this.y+=this.vy
+this.life--
+
+}
+
+draw(){
+
+ctx.fillRect(this.x,this.y,3,3)
+
+}
+
+}
+
+class Asteroid{
+
+constructor(x,y,size){
+
+this.x=x
+this.y=y
+this.size=size
+this.radius=size22
+
+this.vx=rand(-2,2)
+this.vy=rand(-2,2)
+
+}
+
+update(){
+
+this.x+=this.vx
+this.y+=this.vy
+wrap(this)
+
+}
+
+draw(){
+
+ctx.beginPath()
+
+for(let i=0;i<8;i++){
+
+let a=iMath.PI2/8
+let r=this.radius+rand(-4,4)
+
+ctx.lineTo(this.x+Math.cos(a)*r,this.y+Math.sin(a)*r)
+
+}
+
+ctx.closePath()
+ctx.stroke()
+
+}
+
+}
+
+class Enemy{
+
+constructor(){
+
+this.x=rand(0,canvas.width)
+this.y=0
+this.cool=100
+
+}
+
+update(){
+
+let dx=ship.x-this.x
+let dy=ship.y-this.y
+let ang=Math.atan2(dy,dx)
+
+this.x+=Math.cos(ang)*1
+this.y+=Math.sin(ang)1
+
+if(this.cool<=0){
+
+bullets.push(new Bullet(this.x,this.y,ang,6))
+this.cool=100
+
+}
+
+this.cool--
+
+}
+
+draw(){
+
+ctx.strokeRect(this.x-10,this.y-5,20,10)
+
+}
+
+}
+
+class Boss{
+
+constructor(){
+
+this.x=canvas.width/2
+this.y=100
+this.hp=200
+this.phase=1
+
+}
+
+update(){
+
+if(this.hp<150)this.phase=2
+if(this.hp<70)this.phase=3
+
+let dx=ship.x-this.x
+let dy=ship.y-this.y
+let ang=Math.atan2(dy,dx)
+
+if(Math.random()<0.03this.phase){
+
+bullets.push(new Bullet(this.x,this.y,ang,6))
+bullets.push(new Bullet(this.x,this.y,ang+0.3,6))
+bullets.push(new Bullet(this.x,this.y,ang-0.3,6))
+
+}
+
+}
+
+draw(){
+
+ctx.strokeRect(this.x-40,this.y-20,80,40)
+
+}
+
+}
+
+class Particle{
+
+constructor(x,y){
+
+this.x=x
+this.y=y
+
+this.vx=rand(-2,2)
+this.vy=rand(-2,2)
+
+this.life=40
+
+}
+
+update(){
+
+this.x+=this.vx
+this.y+=this.vy
+this.life--
+
+}
+
+draw(){
+
+ctx.fillRect(this.x,this.y,2,2)
+
+}
+
+}
+
+function shoot(){
+
+let a=ship.angle
+
+if(weapon==="laser")bullets.push(new Bullet(ship.x,ship.y,a))
+
+if(weapon==="spread"){
+
+bullets.push(new Bullet(ship.x,ship.y,a-0.2))
+bullets.push(new Bullet(ship.x,ship.y,a))
+bullets.push(new Bullet(ship.x,ship.y,a+0.2))
+
+}
+
+if(weapon==="rapid")bullets.push(new Bullet(ship.x,ship.y,a,10))
+
+ship.cool=10
+
+}
+
+function explode(x,y){
+
+for(let i=0;i<40;i++)
+particles.push(new Particle(x,y))
+
+}
+
+function spawnStars(){
+
+for(let i=0;i<200;i++){
+
+stars.push({
+x:rand(0,canvas.width),
+y:rand(0,canvas.height),
+s:rand(1,3)
+})
+
+}
+
+}
+
+function drawStars(){
+
+stars.forEach(s=>ctx.fillRect(s.x,s.y,s.s,s.s))
+
+}
+
+let ship=new Ship()
+
+spawnStars()
+
+function update(){
+
+ship.update()
+
+bullets.forEach((b,i)=>{
+
+b.update()
+if(b.life<=0)bullets.splice(i,1)
+
+})
+
+particles.forEach((p,i)=>{
+
+p.update()
+if(p.life<=0)particles.splice(i,1)
+
+})
+
+}
+
+function draw(){
+
+ctx.fillStyle="black"
+ctx.fillRect(0,0,canvas.width,canvas.height)
+
+drawStars()
+
+ship.draw()
+
+bullets.forEach(b=>b.draw())
+particles.forEach(p=>p.draw())
+
+}
+
+function loop(){
+
+update()
+draw()
+
+document.getElementById("score").innerText=score
+document.getElementById("lives").innerText=lives
+document.getElementById("shield").innerText=shield
+document.getElementById("xp").innerText=xp
+document.getElementById("weapon").innerText=weapon
+document.getElementById("level").innerText=level
+
+requestAnimationFrame(loop)
+
+}
+
+loop()
+
+</script>
+
+</body>
+</html>
