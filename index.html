@@ -1623,6 +1623,10 @@ class Game {
   }
 
   async createHostOfferForNextPeer() {
+    // WebRTC is deprecated in this rewrite.
+    // This no-op prevents legacy UI paths from attempting RTCPeerConnection setup.
+    this.updateNetStatus('Fetch sync mode: WebRTC disabled.');
+    return;
     // Close old pending pc (if any)
     try {
       if (this.mpHost.pendingPc) {
@@ -1703,6 +1707,9 @@ class Game {
   }
 
   async generateAnswer() {
+    // WebRTC disabled (fetch sync mode).
+    this.updateNetStatus('Fetch sync mode: WebRTC disabled.');
+    return;
     // Called by JOIN side. Uses paste Offer code to create Answer code.
     if (this.mpRole !== 'client') {
       this.mpRole = 'client';
@@ -1765,6 +1772,9 @@ class Game {
   }
 
   acceptJoinAnswer() {
+    // WebRTC disabled (fetch sync mode).
+    this.updateNetStatus('Fetch sync mode: WebRTC disabled.');
+    return;
     // Called by HOST side. Uses pasted Answer code to finalize the pending RTCPeerConnection.
     const answerBox = document.getElementById('webrtc-answer-in');
     const answerRaw = (answerBox?.value || '').trim();
