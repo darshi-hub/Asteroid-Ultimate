@@ -1346,6 +1346,14 @@ class Game {
     if (el) el.textContent = text;
   }
 
+  getRtcConfig() {
+    return {
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' }
+      ]
+    };
+  }
+
   getLocalInputState() {
     const left = this.keys['ArrowLeft'] || this.keys['KeyA'] || this.mob.left;
     const right = this.keys['ArrowRight'] || this.keys['KeyD'] || this.mob.right;
@@ -1465,13 +1473,7 @@ class Game {
     } catch (_) {}
     this.mpHost.pendingPc = null;
 
-    const rtcConfig = {
-      iceServers: [
-        { urls: ['stun:stun.l.google.com:19302', 'stun:global.stun.twilio.com:3478'] }
-      ]
-    };
-
-    const pc = new RTCPeerConnection(rtcConfig);
+    const pc = new RTCPeerConnection(this.getRtcConfig());
     const dc = pc.createDataChannel('aster');
     this.mpHost.pendingPc = pc;
     this.mpHost.pendingDc = dc;
@@ -1638,12 +1640,7 @@ class Game {
       }
 
       const offerDesc = JSON.parse(offerRaw);
-      const rtcConfig = {
-        iceServers: [
-          { urls: ['stun:stun.l.google.com:19302', 'stun:global.stun.twilio.com:3478'] }
-        ]
-      };
-      const pc = new RTCPeerConnection(rtcConfig);
+      const pc = new RTCPeerConnection(this.getRtcConfig());
       this.mpPeerConnection = pc;
 
       pc.ondatachannel = (ev) => {
