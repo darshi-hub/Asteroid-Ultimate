@@ -1354,6 +1354,15 @@ class Game {
     };
   }
 
+  createPeerConnection() {
+    try {
+      return new RTCPeerConnection(this.getRtcConfig());
+    } catch (err) {
+      console.warn('Primary RTCPeerConnection config failed, retrying without ICE servers.', err);
+      return new RTCPeerConnection();
+    }
+  }
+
   getLocalInputState() {
     const left = this.keys['ArrowLeft'] || this.keys['KeyA'] || this.mob.left;
     const right = this.keys['ArrowRight'] || this.keys['KeyD'] || this.mob.right;
@@ -1473,7 +1482,7 @@ class Game {
     } catch (_) {}
     this.mpHost.pendingPc = null;
 
-    const pc = new RTCPeerConnection(this.getRtcConfig());
+    const pc = this.createPeerConnection();
     const dc = pc.createDataChannel('aster');
     this.mpHost.pendingPc = pc;
     this.mpHost.pendingDc = dc;
@@ -1640,7 +1649,7 @@ class Game {
       }
 
       const offerDesc = JSON.parse(offerRaw);
-      const pc = new RTCPeerConnection(this.getRtcConfig());
+      const pc = this.createPeerConnection();
       this.mpPeerConnection = pc;
 
       pc.ondatachannel = (ev) => {
