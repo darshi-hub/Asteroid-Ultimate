@@ -2,13 +2,10 @@
   "name": "aster-multiplayer",
   "version": "0.1.0",
   "private": true,
-  "main": "server.js",
   "type": "commonjs",
   "scripts": {
-    "start": "node server.js"
+    "start": "echo \"No persistent server. Deploy to Vercel (API routes in /api).\""
   },
-  "dependencies": {
-    "ws": "*"
-  }
+  "dependencies": {}
 }
 

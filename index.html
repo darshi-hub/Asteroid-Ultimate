@@ -285,7 +285,7 @@ input[type="text"]::placeholder{color:rgba(255,255,255,0.25);}
               <button id="join-match-btn" class="btn-mini secondary">JOIN MATCH</button>
             </div>
             <div style="margin-top:8px;color:rgba(255,255,255,0.48);font-family:'Share Tech Mono',monospace;font-size:11px;line-height:1.6;">
-              Static/Vercel mode uses WebRTC. Host generates an Offer code, joiner returns an Answer code, then both players play over the browser data channel.
+              Vercel multiplayer uses fetch-based sync: your ship position updates every 100ms, and other players are rendered from server state.
             </div>
           </div>
         </div>
@@ -329,7 +329,7 @@ input[type="text"]::placeholder{color:rgba(255,255,255,0.25);}
         <div class="row" style="margin-top:14px;">
           <div class="field" style="min-width:200px;flex:1;">
             <label>Status</label>
-            <div id="net-status" class="pill">Ready for WebRTC</div>
+            <div id="net-status" class="pill">Ready for sync</div>
           </div>
         </div>
       </div>
@@ -990,8 +990,16 @@ class Game {
     this.netLastInputSentAt = 0;
     this.netInputIntervalMs = 50;
 
-    // Kept for backward compatibility with older code paths; not used in strict-static mode.
-    this.net = { ws: null, status: 'offline', roomCode: null, serverUrl: 'ws://localhost:8080' };
+    // Fetch-based multiplayer: we only sync positions for rendering.
+    // (No authoritative server simulation.)
+    this.mpFetchEnabled = false;
+    this.mpFetch = {
+      playerId: null,
+      sendTimer: null,
+      pollTimer: null,
+      sendInFlight: false,
+      pollInFlight: false
+    };
     this.remotePlayers = {}; // id -> player snapshot
     this.shipConfig = { radius: 28, maxHp: 100, shield: 100, weaponIdx: 0 };
     this.me = this.loadLocalProfile();
@@ -1030,6 +1038,20 @@ class Game {
 
   stopMultiplayer() {
     this.multiplayer = false;
+    this.mpFetchEnabled = false;
+    this.remotePlayers = {};
+
+    // Stop fetch sync intervals (if active).
+    if (this.mpFetch?.sendTimer) clearInterval(this.mpFetch.sendTimer);
+    if (this.mpFetch?.pollTimer) clearInterval(this.mpFetch.pollTimer);
+    this.mpFetch = {
+      playerId: this.mpFetch?.playerId ?? null,
+      sendTimer: null,
+      pollTimer: null,
+      sendInFlight: false,
+      pollInFlight: false
+    };
+
     this.mpRole = 'single';
     this.mpLocalId = null;
     this.mpDataChannel = null;
@@ -1134,6 +1156,7 @@ class Game {
   }
 
   restartGame() {
+    const shouldFetchSync = this.mpFetchEnabled === true;
     this.stopMultiplayer();
     document.getElementById('gameover-screen').style.display = 'none';
     document.getElementById('lobby-screen').style.display = 'none';
@@ -1142,6 +1165,7 @@ class Game {
     this.setMinimapVisible(true);
     this.initGame();
     this.loadLevel();
+    if (shouldFetchSync) this.startFetchMultiplayer();
   }
 
   loadLevel() {
@@ -1275,11 +1299,14 @@ class Game {
     document.getElementById('displayName-input').value = this.me.displayName;
     document.getElementById('friend-code-val').textContent = this.me.friendCode;
 
-    // WebRTC host/join buttons (strict static multiplayer)
+    // Multiplayer (fetch-based sync) host/join buttons.
     document.getElementById('host-match-btn').onclick = () => this.hostMatch();
     document.getElementById('join-match-btn').onclick = () => this.joinMatch();
-    document.getElementById('webrtc-generate-answer-btn').onclick = () => this.generateAnswer();
-    document.getElementById('webrtc-accept-answer-btn').onclick = () => this.acceptJoinAnswer();
+    // Legacy WebRTC code inputs/buttons are no longer used.
+    document.getElementById('webrtc-generate-answer-btn').onclick = () =>
+      this.updateNetStatus('Fetch sync mode: no offer/answer codes needed.');
+    document.getElementById('webrtc-accept-answer-btn').onclick = () =>
+      this.updateNetStatus('Fetch sync mode: no offer/answer codes needed.');
     document.getElementById('add-friend-btn').onclick = () => this.addFriendFromUI();
 
     document.getElementById('restart-btn').onclick = () => this.restartGame();
@@ -1344,6 +1371,128 @@ class Game {
   updateNetStatus(text) {
     const el = document.getElementById('net-status');
     if (el) el.textContent = text;
+  }
+
+  getOrCreateFetchPlayerId() {
+    const existing = (localStorage.getItem('aster_player_id') || '').toString().trim();
+    if (existing) return existing;
+    const id = 'p_' + Math.random().toString(36).slice(2, 10);
+    localStorage.setItem('aster_player_id', id);
+    return id;
+  }
+
+  startFetchMultiplayer() {
+    // Enable fetch sync for other ships.
+    this.mpFetchEnabled = true;
+    this.multiplayer = true;
+    this.mpRole = 'single'; // keep local gameplay simulation
+
+    // Initialize remote snapshot state.
+    this.remotePlayers = {};
+    this.mpFetch.playerId = this.getOrCreateFetchPlayerId();
+
+    // Start sending our player snapshot every 100ms.
+    if (this.mpFetch.sendTimer) clearInterval(this.mpFetch.sendTimer);
+    if (this.mpFetch.pollTimer) clearInterval(this.mpFetch.pollTimer);
+
+    this.updateNetStatus('Syncing players...');
+    this.sendFetchPlayerState();
+    this.fetchAndUpdateRemotePlayers();
+
+    this.mpFetch.sendTimer = setInterval(() => {
+      this.sendFetchPlayerState();
+    }, 100);
+
+    // Poll server state less frequently to reduce load.
+    this.mpFetch.pollTimer = setInterval(() => {
+      this.fetchAndUpdateRemotePlayers();
+    }, 200);
+  }
+
+  async sendFetchPlayerState() {
+    if (!this.mpFetchEnabled) return;
+    if (!this.mpFetch?.playerId) return;
+    if (!this.player) return;
+    if (this.mpFetch.sendInFlight) return;
+    this.mpFetch.sendInFlight = true;
+
+    const p = this.player;
+    const payload = {
+      playerId: this.mpFetch.playerId,
+      displayName: this.me.displayName,
+      friendCode: this.me.friendCode,
+      x: p.x,
+      y: p.y,
+      angle: p.angle,
+      radius: p.radius,
+      hp: p.hp,
+      shield: p.shield,
+      invuln: p.invuln,
+      weaponIdx: this.weaponIdx,
+      boost: p.boost,
+      boosting: p.boosting,
+      team: 0
+    };
+
+    const ac = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    const timeout = ac ? setTimeout(() => ac.abort(), 400) : null;
+
+    try {
+      await fetch('/api/game', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(payload),
+        signal: ac ? ac.signal : undefined,
+        cache: 'no-store'
+      });
+    } catch (_) {
+      // Best-effort: if fetch fails, gameplay stays local.
+    } finally {
+      if (timeout) clearTimeout(timeout);
+      this.mpFetch.sendInFlight = false;
+    }
+  }
+
+  async fetchAndUpdateRemotePlayers() {
+    if (!this.mpFetchEnabled) return;
+    if (this.mpFetch.pollInFlight) return;
+    if (!this.mpFetch?.playerId) return;
+
+    this.mpFetch.pollInFlight = true;
+
+    const ac = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    const timeout = ac ? setTimeout(() => ac.abort(), 600) : null;
+
+    try {
+      const res = await fetch('/api/state', {
+        method: 'GET',
+        cache: 'no-store',
+        signal: ac ? ac.signal : undefined
+      });
+      if (!res.ok) return;
+      const data = await res.json().catch(() => ({}));
+      const players = Array.isArray(data.players) ? data.players : [];
+
+      const next = {};
+      for (const p of players) {
+        if (!p || p.id === this.mpFetch.playerId) continue;
+        next[p.id] = p;
+      }
+      this.remotePlayers = next;
+
+      // Show online population in lobby (harmless if the DOM node is hidden).
+      try {
+        const lobbyList = document.getElementById('room-players');
+        if (lobbyList) {
+          this.renderRoomPlayers(players);
+        }
+      } catch (_) {}
+    } catch (_) {
+      // ignore
+    } finally {
+      if (timeout) clearTimeout(timeout);
+      this.mpFetch.pollInFlight = false;
+    }
   }
 
   getRtcConfig() {
@@ -1526,106 +1675,31 @@ class Game {
   }
 
   hostMatch() {
-    // Start authoritative match as host (manual offer/answer for up to ~10 players).
+    // Fetch-based multiplayer: local gameplay simulation + shared ship positions.
     this.stopMultiplayer();
+
     const displayName = (document.getElementById('displayName-input').value.trim() || this.me.displayName).slice(0, 22);
     this.me.displayName = displayName;
     localStorage.setItem('aster_display_name', displayName);
 
-    const mode = this.currentMode === 'pvp' ? 'pvp' : 'coop';
-    this.mpRole = 'host';
-    this.multiplayer = true;
-    this.mpLocalId = 'p_' + Math.random().toString(36).slice(2, 10);
+    document.getElementById('start-screen').style.display = 'none';
+    document.getElementById('lobby-screen').style.display = 'none';
+    document.getElementById('gameover-screen').style.display = 'none';
 
-    this.initGame();
-    this.setMinimapVisible(true);
     this.state = 'play';
     this.running = true;
+    this.setMinimapVisible(true);
 
-    this.mpHost.room = {
-      mode,
-      pvpRule: this.mpPvpRule || 'ffa',
-      noBoss: mode === 'pvp',
-      isBoss: false,
-      players: new Map(),
-      entities: [],
-      level: 1,
-      score: 0,
-      tick: 0
-    };
+    this.initGame();
+    this.loadLevel();
+    this.setWeapon(this.weaponIdx);
 
-    const ship = this.getJoinShipConfig();
-    const hostPlayer = {
-      id: this.mpLocalId,
-      displayName,
-      friendCode: this.me.friendCode,
-      shipConfig: ship,
-      x: WORLD / 2 + rand(-120, 120),
-      y: WORLD / 2 + rand(-120, 120),
-      angle: -Math.PI / 2,
-      radius: ship.radius,
-      maxHp: ship.maxHp,
-      hp: ship.maxHp,
-      maxShield: ship.shield,
-      shield: ship.shield,
-      weaponIdx: ship.weaponIdx,
-      team: 0,
-      invuln: 120,
-      score: 0,
-      combo: 0,
-      comboTimer: 0,
-      boost: 100,
-      boosting: false,
-      lastInput: this.getLocalInputState(),
-      invulnTimer: 0
-    };
-    MPEngine.initPlayer(hostPlayer);
-    this.mpHost.room.players.set(this.mpLocalId, hostPlayer);
-
-    this.mpHost.peers = new Map();
-    this.mpHost.pendingPc = null;
-    this.mpHost.pendingDc = null;
-
-    // Simulation loop (fixed tick)
-    if (this.mpHost.simTimer) clearInterval(this.mpHost.simTimer);
-    if (this.mpHost.snapshotTimer) clearInterval(this.mpHost.snapshotTimer);
-
-    this.mpHost.simTimer = setInterval(() => {
-      const room = this.mpHost.room;
-      const you = room?.players?.get(this.mpLocalId);
-      if (you) you.lastInput = this.getLocalInputState();
-      MPEngine.stepRoom(room);
-    }, 50);
-
-    this.mpHost.snapshotTimer = setInterval(() => {
-      this.broadcastSnapshots();
-    }, 100);
-
-    this.updateNetStatus('Hosting... generating Offer code');
-    this.createHostOfferForNextPeer().catch(err => {
-      const msg = (err && err.message) ? err.message : String(err);
-      this.updateNetStatus('WebRTC offer failed. ' + msg + ' (Use https or http://localhost)');
-    });
+    this.startFetchMultiplayer();
   }
 
   joinMatch() {
-    // Join an existing match from a host Offer code.
-    this.stopMultiplayer();
-    const displayName = (document.getElementById('displayName-input').value.trim() || this.me.displayName).slice(0, 22);
-    this.me.displayName = displayName;
-    localStorage.setItem('aster_display_name', displayName);
-
-    this.mpRole = 'client';
-    this.multiplayer = true;
-    this.mpLocalId = null;
-    this.mpDataChannel = null;
-
-    this.initGame();
-    this.setMinimapVisible(true);
-    this.state = 'play';
-    this.running = true;
-
-    this.updateNetStatus('Waiting for Offer code...');
+    // Fetch-based multiplayer has no offer/answer exchange.
+    this.hostMatch();
   }
 
   async generateAnswer() {
@@ -1802,90 +1876,25 @@ class Game {
   }
 
   createRoom() {
-    this.multiplayer = true;
-    this.netLastInputSentAt = 0;
-    const serverUrl = document.getElementById('serverUrl-input').value.trim() || 'ws://localhost:8080';
-    const displayName = document.getElementById('displayName-input').value.trim().slice(0, 22) || this.me.displayName;
-    this.net.serverUrl = serverUrl;
-    this.me.displayName = displayName;
-    localStorage.setItem('aster_display_name', displayName);
-
-    this.net.roomCode = null;
-    this.remotePlayers = {};
-    this.updateNetStatus('Connecting...');
-    this.setMinimapVisible(true);
-    this.connectWsAndSend({ type: 'room:create', mode: this.currentMode, displayName, friendCode: this.me.friendCode, shipConfig: this.getJoinShipConfig(), roomCode: null });
+    // Legacy WebSocket matchmaking removed.
+    this.updateNetStatus('Fetch sync mode: use Host/Join.');
+    this.hostMatch();
   }
 
   joinRoom() {
-    this.multiplayer = true;
-    this.netLastInputSentAt = 0;
-    const roomCode = (document.getElementById('roomCode-input').value.trim() || '').toUpperCase();
-    if (!roomCode) {
-      this.updateNetStatus('Enter a room code');
-      return;
-    }
-    const serverUrl = document.getElementById('serverUrl-input').value.trim() || 'ws://localhost:8080';
-    const displayName = document.getElementById('displayName-input').value.trim().slice(0, 22) || this.me.displayName;
-    this.net.serverUrl = serverUrl;
-    this.me.displayName = displayName;
-    localStorage.setItem('aster_display_name', displayName);
-
-    this.net.roomCode = roomCode;
-    this.remotePlayers = {};
-    this.updateNetStatus('Connecting...');
-    this.setMinimapVisible(true);
-    this.connectWsAndSend({ type: 'room:join', mode: this.currentMode, displayName, friendCode: this.me.friendCode, shipConfig: this.getJoinShipConfig(), roomCode });
+    // Legacy WebSocket matchmaking removed.
+    this.updateNetStatus('Fetch sync mode: use Host/Join.');
+    this.hostMatch();
   }
 
   connectWsAndSend(payload) {
-    try {
-      if (this.net.ws) { try { this.net.ws.close(); } catch (_) {} }
-      const ws = new WebSocket(this.net.serverUrl);
-      this.net.ws = ws;
-      ws.onopen = () => {
-        this.updateNetStatus('Connected');
-        ws.send(JSON.stringify(payload));
-      };
-      ws.onmessage = (ev) => {
-        let data = null;
-        try { data = JSON.parse(ev.data); } catch (_) { return; }
-        this.handleNetMessage(data);
-      };
-      ws.onerror = () => this.updateNetStatus('WebSocket error');
-      ws.onclose = () => this.updateNetStatus('Disconnected');
-    } catch (e) {
-      this.updateNetStatus('Cannot connect');
-    }
+    // WebSocket code removed: matchmaking is now handled via fetch sync.
+    this.updateNetStatus('Fetch sync mode active.');
   }
 
   handleNetMessage(data) {
-    // Server integration will expand this; for now we accept snapshot shape.
-    if (!data || !data.type) return;
-    if (data.type === 'room:created' && data.roomCode) {
-      this.net.roomCode = data.roomCode;
-      const el = document.getElementById('my-room-code');
-      if (el) el.textContent = data.roomCode;
-      return;
-    }
-    if (data.type === 'room:joined' && data.roomCode) {
-      this.net.roomCode = data.roomCode;
-      const el = document.getElementById('my-room-code');
-      if (el) el.textContent = data.roomCode;
-      return;
-    }
-    if (data.type === 'snapshot') {
-      this.applySnapshot(data);
-      return;
-    }
-    if (data.type === 'friends:list') {
-      this.renderFriendList(data.friends || []);
-      return;
-    }
-    if (data.type === 'room:players') {
-      this.renderRoomPlayers(data.players || []);
-      return;
-    }
+    // Legacy WebSocket payload handler removed.
+    return;
   }
 
   applySnapshot(data) {
@@ -1968,12 +1977,15 @@ class Game {
   sendNetInput() {
     if (!this.multiplayer) return;
     if (this.state !== 'play') return;
-    // WebRTC strict-static mode
+    // Fetch sync mode: gameplay is simulated locally; we only sync ship positions.
+    if (this.mpFetchEnabled) return;
+
+    // WebRTC strict-static mode (legacy).
     if (this.mpRole === 'client') {
       if (!this.mpDataChannel || this.mpDataChannel.readyState !== 'open') return;
     } else {
-      // Backward-compatible websocket path (not used in strict-static mode).
-      if (!this.net.ws || this.net.ws.readyState !== 1) return;
+      // WebSocket code removed.
+      return;
     }
 
     const now = Date.now();
@@ -1988,11 +2000,7 @@ class Game {
 
     const input = { left, right, thrust, boost, fire, weaponIdx: this.weaponIdx };
     try {
-      if (this.mpRole === 'client') {
-        this.mpDataChannel.send(JSON.stringify({ type: 'input', input }));
-      } else {
-        this.net.ws.send(JSON.stringify({ type: 'input', input }));
-      }
+      this.mpDataChannel.send(JSON.stringify({ type: 'input', input }));
     } catch (_) {}
   }
 
@@ -2007,9 +2015,7 @@ class Game {
     if (!friends.some(f => f.code === code)) friends.push({ code, addedAt: Date.now() });
     localStorage.setItem(key, JSON.stringify(friends));
     this.renderFriendList(friends);
-    if (this.net.ws && this.net.ws.readyState === 1) {
-      this.net.ws.send(JSON.stringify({ type: 'friend:add', friendCode: code }));
-    }
+    // Server-side reconciliation removed (fetch multiplayer only syncs positions).
   }
 
   renderFriendList(friends) {
@@ -2460,8 +2466,11 @@ class Game {
       const blink = (rp.invuln ?? 0) > 0 && Math.floor((rp.invuln ?? 0) / 5) % 2 === 0;
       if (blink) return;
 
+      const safeX = this.player ? this.player.x + wrapDist(rp.x - this.player.x, WORLD) : rp.x;
+      const safeY = this.player ? this.player.y + wrapDist(rp.y - this.player.y, WORLD) : rp.y;
+
       ctx.save();
-      ctx.translate(rp.x, rp.y);
+      ctx.translate(safeX, safeY);
       ctx.rotate((rp.angle || 0) - Math.PI/2);
       ctx.shadowBlur = 20; ctx.shadowColor = '#f43f5e';
       if ((rp.shield ?? 0) > 0) {
