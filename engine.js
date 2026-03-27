@@ -453,7 +453,7 @@ function stepEntities(room) {
     if (ent.owner === 'enemy') {
       for (const p of playersArr) {
         if (p.invuln > 0) continue;
-        if (dist(p.x, p.y, ent.x, ent.y) < p.radius) {
+        if (dist(p.x, p.y, ent.x, ent.y) < p.radius + ent.radius) {
           ent.dead = true;
           damagePlayer(room, p, 12);
           break;
@@ -470,7 +470,7 @@ function stepEntities(room) {
         for (const p of playersArr) {
           if (p.id === shooter.id) continue;
           if (p.invuln > 0) continue;
-          if (dist(p.x, p.y, ent.x, ent.y) < p.radius) {
+          if (dist(p.x, p.y, ent.x, ent.y) < p.radius + ent.radius) {
             ent.dead = true;
             damagePlayer(room, p, 20);
             // MVP: small scoring for PvP hits/kills.
@@ -488,7 +488,7 @@ function stepEntities(room) {
         if (ent.dead) break;
         if (target.deco || target.type === 'bullet' || target.type === 'powerup') continue;
         if (target.type !== 'boss' && target.type !== 'ufo' && target.type !== 'asteroid') continue;
-        if (dist(target.x, target.y, ent.x, ent.y) < target.radius) {
+        if (dist(target.x, target.y, ent.x, ent.y) < target.radius + ent.radius) {
           ent.dead = true;
           target.hp = (target.hp || 1) - 1;
           if (target.hp <= 0) {

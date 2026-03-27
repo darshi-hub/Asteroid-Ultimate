@@ -1,4 +1,4 @@
-// /api/state
+// /api/state.js
 // Returns all current players (non-expired) for rendering.
 
 const { state } = require('./_gameState');
@@ -18,7 +18,10 @@ function cleanupExpiredPlayers() {
 }
 
 module.exports = async function handler(req, res) {
-  res.setHeader('Cache-Control', 'no-store');
+  // Ensure the browser fetches fresh data instead of caching
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
 
   if (req.method !== 'GET') return res.status(405).send('Method not allowed');
 
@@ -28,4 +31,3 @@ module.exports = async function handler(req, res) {
     players: Object.values(state.players)
   });
 };
-

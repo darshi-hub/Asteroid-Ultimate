@@ -1,4 +1,4 @@
-// /api/game
+// /api/game.js
 // Receives player updates from the frontend and stores them in memory.
 
 const { state } = require('./_gameState');
@@ -41,12 +41,31 @@ module.exports = async function handler(req, res) {
   const x = Number(body.x);
   const y = Number(body.y);
   const angle = typeof body.angle === 'number' ? body.angle : Number(body.angle);
+  const boost = typeof body.boost === 'number' ? body.boost : undefined;
+  const boosting = Boolean(body.boosting);
+  const combo = typeof body.combo === 'number' ? body.combo : undefined;
+  const score = typeof body.score === 'number' ? body.score : undefined;
+  const team = typeof body.team === 'number' ? body.team : undefined;
+
+  let playerHits = state.players[playerId] ? state.players[playerId].hits || [] : [];
+  if (body.clearHits) playerHits = [];
+
+  if (body.hitTargetId) {
+    const t = state.players[body.hitTargetId];
+    if (t) {
+      t.hits = t.hits || [];
+      t.hits.push({ damage: Number(body.hitDamage) || 20, time: nowMs() });
+    }
+  }
 
   if (!Number.isFinite(x) || !Number.isFinite(y)) {
     return res.status(400).json({ error: 'x and y must be numbers' });
   }
 
-  // Keep the snapshot small but include enough fields for rendering.
+  // BUG FIX: Run cleanup so the server memory doesn't fill up
+  cleanupExpiredPlayers();
+
+  // BUG FIX: Added `lastSeenAt: nowMs()` so players aren't instantly deleted by state.js
   state.players[playerId] = {
     id: playerId,
     displayName: typeof body.displayName === 'string' ? body.displayName.slice(0, 22) : undefined,
@@ -59,14 +78,14 @@ module.exports = async function handler(req, res) {
     shield: Number.isFinite(Number(body.shield)) ? Number(body.shield) : undefined,
     invuln: Number.isFinite(Number(body.invuln)) ? Number(body.invuln) : undefined,
     weaponIdx: Number.isFinite(Number(body.weaponIdx)) ? Number(body.weaponIdx) : undefined,
-    boost: Number.isFinite(Number(body.boost)) ? Number(body.boost) : undefined,
-    boosting: Boolean(body.boosting),
-    team: Number.isFinite(Number(body.team)) ? Number(body.team) : undefined,
-    lastSeenAt: nowMs()
+    boost,
+    boosting,
+    combo,
+    score,
+    team,
+    hits: playerHits,
+    lastSeenAt: nowMs() 
   };
-
-  cleanupExpiredPlayers();
 
   return res.status(200).json({ ok: true });
 };
-

@@ -992,7 +992,6 @@ class Game {
 
     // Fetch-based multiplayer: we only sync positions for rendering.
     // (No authoritative server simulation.)
-    this.mpFetchEnabled = false;
     this.mpFetch = {
       playerId: null,
       sendTimer: null,
@@ -1000,6 +999,10 @@ class Game {
       sendInFlight: false,
       pollInFlight: false
     };
+    this.pendingHitTargetId = null;
+    this.pendingHitDamage = null;
+    this.pendingClearHits = false;
+    this.lastHitTimeProcessed = 0;
     this.remotePlayers = {}; // id -> player snapshot
     this.shipConfig = { radius: 28, maxHp: 100, shield: 100, weaponIdx: 0 };
     this.me = this.loadLocalProfile();
@@ -1431,8 +1434,16 @@ class Game {
       weaponIdx: this.weaponIdx,
       boost: p.boost,
       boosting: p.boosting,
-      team: 0
+      combo: p.combo,
+      score: this.score,
+      team: p.team || 0,
+      hitTargetId: this.pendingHitTargetId,
+      hitDamage: this.pendingHitDamage,
+      clearHits: this.pendingClearHits
     };
+    this.pendingHitTargetId = null;
+    this.pendingHitDamage = null;
+    this.pendingClearHits = false;
 
     const ac = typeof AbortController !== 'undefined' ? new AbortController() : null;
     const timeout = ac ? setTimeout(() => ac.abort(), 400) : null;
@@ -1475,7 +1486,21 @@ class Game {
 
       const next = {};
       for (const p of players) {
-        if (!p || p.id === this.mpFetch.playerId) continue;
+        if (!p) continue;
+        if (p.id === this.mpFetch.playerId) {
+          if (p.hits && p.hits.length > 0) {
+            let newlyHit = false;
+            p.hits.forEach(h => {
+              if (h.time > (this.lastHitTimeProcessed || 0)) {
+                this.damagePlayer(h.damage || 20);
+                this.lastHitTimeProcessed = Math.max(this.lastHitTimeProcessed || 0, h.time);
+                newlyHit = true;
+              }
+            });
+            if (newlyHit) this.pendingClearHits = true;
+          }
+          continue;
+        }
         next[p.id] = p;
       }
       this.remotePlayers = next;
@@ -1503,14 +1528,11 @@ class Game {
   };
   }
   createPeerConnection() {
-    try {
-      return new RTCPeerConnection(this.getRtcConfig());
-    } catch (err) {
-      console.warn('RTC config failed:', err);
-      return new RTCPeerConnection({
-        iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
-      });
-    }
+  return new RTCPeerConnection({
+    iceServers: [
+      { urls: "stun:stun.l.google.com:19302" }
+    ]
+  });
   }
 
   getLocalInputState() {
@@ -2287,7 +2309,7 @@ class Game {
       if (!ent.deco && ent.type!=='bullet') {
         this.entities.forEach(b => {
           if (b.type==='bullet' && b.owner==='player' && !b.dead) {
-            if (dist(b,ent) < ent.radius) {
+            if (dist(b,ent) < b.radius + ent.radius) {
               b.dead = true;
               if (ent.type==='boss'||ent.type==='ufo'||ent.type==='asteroid') {
                 ent.hp = (ent.hp||1)-1;
@@ -2301,11 +2323,33 @@ class Game {
 
       // Enemy bullet hits player
       if (ent.type==='bullet' && ent.owner==='enemy' && p.invuln<=0) {
-        if (dist(p,ent) < p.radius) { this.damagePlayer(12); ent.dead=true; }
+        if (dist(p,ent) < p.radius + ent.radius) { this.damagePlayer(12); ent.dead=true; }
       }
     });
 
     this.entities = this.entities.filter(e=>!e.dead);
+    
+    // PvP Bullet Collision against remotePlayers
+    if (this.currentMode === 'pvp') {
+      this.entities.forEach(b => {
+        if (b.type === 'bullet' && b.owner === 'player' && !b.dead) {
+          Object.values(this.remotePlayers || {}).forEach(rp => {
+            if ((rp.invuln || 0) <= 0 && dist(b, rp) < b.radius + rp.radius) {
+              if (this.mpPvpRule === 'teams' && (this.player.team || 0) === (rp.team || 0)) return;
+              b.dead = true;
+              this.burst(b.x, b.y, b.color, 12, 4);
+              this.burst(rp.x, rp.y, '#f43f5e', 8, 4);
+              rp.hp = (rp.hp || 100) - 20;
+              rp.invuln = 60;
+              if (rp.hp <= 0) this.score += 300; else this.score += 50;
+              this.pendingHitTargetId = rp.id;
+              this.pendingHitDamage = 20;
+            }
+          });
+        }
+      });
+    }
+
     this.particles.forEach(pt=>{ pt.x+=pt.vx; pt.y+=pt.vy; pt.life-=pt.decay; pt.vx*=0.95; pt.vy*=0.95; });
     this.particles = this.particles.filter(p=>p.life>0);
 
