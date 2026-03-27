@@ -531,7 +531,7 @@ const MPEngine = (() => {
   }
 
   function spawnAsteroid(room, x, y, r) {
-    const radius = r ?? rand(38, WORLD);
+    const radius = r ?? rand(38, 70);
     room.entities.push({
       type: 'asteroid',
       x: x ?? rand(0, WORLD), y: y ?? rand(0, WORLD),
@@ -1302,14 +1302,11 @@ class Game {
     document.getElementById('displayName-input').value = this.me.displayName;
     document.getElementById('friend-code-val').textContent = this.me.friendCode;
 
-    // Multiplayer (fetch-based sync) host/join buttons.
+    // Multiplayer host/join buttons.
     document.getElementById('host-match-btn').onclick = () => this.hostMatch();
     document.getElementById('join-match-btn').onclick = () => this.joinMatch();
-    // Legacy WebRTC code inputs/buttons are no longer used.
-    document.getElementById('webrtc-generate-answer-btn').onclick = () =>
-      this.updateNetStatus('Fetch sync mode: no offer/answer codes needed.');
-    document.getElementById('webrtc-accept-answer-btn').onclick = () =>
-      this.updateNetStatus('Fetch sync mode: no offer/answer codes needed.');
+    document.getElementById('webrtc-generate-answer-btn').onclick = () => this.generateAnswer();
+    document.getElementById('webrtc-accept-answer-btn').onclick = () => this.acceptJoinAnswer();
     document.getElementById('add-friend-btn').onclick = () => this.addFriendFromUI();
 
     document.getElementById('restart-btn').onclick = () => this.restartGame();
@@ -1320,6 +1317,10 @@ class Game {
 
     window.addEventListener('keydown', e => {
       this.keys[e.code] = true;
+      if(e.code === 'Escape' && this.state !== 'start' && this.state !== 'dead') {
+        const lob = document.getElementById('lobby-screen');
+        if (lob) lob.style.display = lob.style.display === 'none' ? 'flex' : 'none';
+      }
       if(this.state!=='play') return;
       if(e.key==='1') this.setWeapon(0);
       if(e.key==='2') this.setWeapon(1);
@@ -1631,11 +1632,15 @@ class Game {
   }
 
   async waitIceGatheringComplete(pc) {
-    if (!pc) return;
-    if (pc.iceGatheringState === 'complete') return;
+    if (!pc || pc.iceGatheringState === 'complete') return;
     await new Promise(resolve => {
+      const timeout = setTimeout(() => {
+        pc.removeEventListener('icegatheringstatechange', done);
+        resolve();
+      }, 3000);
       const done = () => {
         if (pc.iceGatheringState === 'complete') {
+          clearTimeout(timeout);
           pc.removeEventListener('icegatheringstatechange', done);
           resolve();
         }
@@ -1646,10 +1651,6 @@ class Game {
   }
 
   async createHostOfferForNextPeer() {
-    // WebRTC is deprecated in this rewrite.
-    // This no-op prevents legacy UI paths from attempting RTCPeerConnection setup.
-    this.updateNetStatus('Fetch sync mode: WebRTC disabled.');
-    return;
     // Close old pending pc (if any)
     try {
       if (this.mpHost.pendingPc) {
@@ -1710,8 +1711,8 @@ class Game {
     localStorage.setItem('aster_display_name', displayName);
 
     document.getElementById('start-screen').style.display = 'none';
-    document.getElementById('lobby-screen').style.display = 'none';
     document.getElementById('gameover-screen').style.display = 'none';
+    this.updateNetStatus("Hosting! Press ESC to hide lobby and play.");
 
     this.state = 'play';
     this.running = true;
@@ -1721,18 +1722,61 @@ class Game {
     this.loadLevel();
     this.setWeapon(this.weaponIdx);
 
-    this.startFetchMultiplayer();
+    this.startWebrtcHost();
+  }
+
+  startWebrtcHost() {
+    this.mpRole = 'host';
+    this.multiplayer = true;
+    this.mpHost.room = {
+      tick: 0,
+      mode: this.currentMode,
+      pvpRule: this.mpPvpRule,
+      level: 1,
+      noBoss: this.currentMode === 'pvp',
+      players: new Map(),
+      entities: []
+    };
+    
+    const localId = 'p_' + Math.random().toString(36).slice(2, 10);
+    this.mpLocalId = localId;
+    const p = {
+      id: localId,
+      displayName: this.me.displayName,
+      friendCode: this.me.friendCode,
+      x: WORLD / 2,
+      y: WORLD / 2,
+      angle: -Math.PI / 2,
+      shipConfig: this.getJoinShipConfig(),
+      score: 0, combo: 0, boost: 100, team: 0
+    };
+    MPEngine.initPlayer(p);
+    this.mpHost.room.players.set(localId, p);
+    
+    MPEngine.loadLevel(this.mpHost.room);
+    
+    // Clear old intervals if any
+    if (this.mpHost.simTimer) clearInterval(this.mpHost.simTimer);
+    if (this.mpHost.snapshotTimer) clearInterval(this.mpHost.snapshotTimer);
+
+    this.mpHost.simTimer = setInterval(() => {
+      const me = this.mpHost.room.players.get(this.mpLocalId);
+      if (me) me.lastInput = this.getLocalInputState();
+      MPEngine.stepRoom(this.mpHost.room);
+    }, 1000 / 60);
+
+    this.mpHost.snapshotTimer = setInterval(() => {
+      this.broadcastSnapshots();
+    }, 1000 / 20);
+
+    this.createHostOfferForNextPeer();
   }
 
   joinMatch() {
-    // Fetch-based multiplayer has no offer/answer exchange.
-    this.hostMatch();
+    this.updateNetStatus('To join, paste Host Offer Code and click GENERATE ANSWER');
   }
 
   async generateAnswer() {
-    // WebRTC disabled (fetch sync mode).
-    this.updateNetStatus('Fetch sync mode: WebRTC disabled.');
-    return;
     // Called by JOIN side. Uses paste Offer code to create Answer code.
     if (this.mpRole !== 'client') {
       this.mpRole = 'client';
@@ -1759,6 +1803,7 @@ class Game {
       pc.ondatachannel = (ev) => {
         this.mpDataChannel = ev.channel;
         ev.channel.onopen = () => {
+          document.getElementById('lobby-screen').style.display = 'none';
           this.updateNetStatus('Connected. Synching...');
           // Send join info to host.
           const hello = {
@@ -1795,10 +1840,6 @@ class Game {
   }
 
   acceptJoinAnswer() {
-    // WebRTC disabled (fetch sync mode).
-    this.updateNetStatus('Fetch sync mode: WebRTC disabled.');
-    return;
-    // Called by HOST side. Uses pasted Answer code to finalize the pending RTCPeerConnection.
     const answerBox = document.getElementById('webrtc-answer-in');
     const answerRaw = (answerBox?.value || '').trim();
     if (!answerRaw) {
@@ -1813,8 +1854,13 @@ class Game {
       return;
     }
 
+    // Prevent this underlying PC from being closed when we generate the next offer!
+    this.mpHost.activePcs = this.mpHost.activePcs || [];
+    this.mpHost.activePcs.push(pendingPc);
+    this.mpHost.pendingPc = null;
+
     pendingPc.setRemoteDescription(answerDesc).then(() => {
-      this.updateNetStatus('Join accepted. Generating next Offer...');
+      this.updateNetStatus('Join accepted. Generating next Offer... (Press ESC to hide lobby)');
       // Ready for the next player.
       this.createHostOfferForNextPeer();
     }).catch(() => {
